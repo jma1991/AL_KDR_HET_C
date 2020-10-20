@@ -27,6 +27,12 @@ navbar:
     - href: 08-marker-detection.html
     - text: Cell type annotation
     - href: 09-cell-annotation.html
+  - text: Analysis
+    menu:
+    - text: Atlas integration
+    - href: 10-atlas-integration.html
+  - text: Interactive
+    href: interactive.html
   right:
   - icon: fa-github
     text: Source code
