@@ -9,7 +9,7 @@ editor_options:
 
 ## Introduction
 
-In this document we are going to analyse the results from the pySCENIC command-line software. SCENIC is a tool for single-cell regulatory network inference and clustering.
+In this document we are going to analyse the output from the pySCENIC command-line software. SCENIC is a tool for single-cell regulatory network inference and clustering.
 
 ## Setup
 
@@ -38,9 +38,26 @@ library(scuttle)
 Load CRAN packages:
 
 ```{r}
+library(hues)
 library(pheatmap)
 library(viridis)
 ```
+
+Define function to import AUCell matrix from text format:
+
+```{r}
+importAUCfromText <- function(fileName, rows="regulons", columns="cells", transpose=TRUE, newNames=NULL) {
+  aucMatrix <- data.table::fread(fileName, drop=1)
+  cellNames <- unname(unlist(data.table::fread(fileName, select=1, skip=1)))
+  if(transpose) aucMatrix <- t(as.matrix(aucMatrix))
+  colnames(aucMatrix) <- cellNames
+  if(!is.null(newNames)) rownames(aucMatrix) <- unname(newNames[rownames(aucMatrix)])
+  names(dimnames(aucMatrix)) <- c(rows, columns)
+  return(aucMatrix)
+}
+```
+
+## Results
 
 Read experiment object:
 
@@ -48,130 +65,61 @@ Read experiment object:
 sce <- readRDS("output/09-cell-annotation.rds")
 ```
 
-Create output directory:
+Make cell names unique:
 
 ```{r}
-dir.create("output/pyscenic", showWarnings = FALSE, recursive = TRUE)
+N <- ncol(sce)
+
+colnames(sce) <- seq_len(N)
 ```
 
-Write normalized counts matrix to disk:
+Import activity matrix:
 
 ```{r}
-mat <- normalizeCounts(sce, log = FALSE)
-
-rownames(mat) <- uniquifyFeatureNames(rowData(sce)$gene_id, rowData(sce)$gene_name)
-
-mat <- t(mat)
-
-write.csv(mat, file = "output/pyscenic/normcounts.csv", quote = FALSE, row.names = TRUE)
+auc <- importAUCfromText("output/pyscenic/aucell.csv")
 ```
 
-## Scenic
-
-Check if pyscenic grn output file is already present: 
-
-```{r cache = FALSE}
-if (file.exists("output/pyscenic/grn.csv")) {
-  run <- FALSE
-} else {
-  run <- TRUE
-}
-```
-
-Derive co-expression modules from expression matrix:
-
-```{bash cache = FALSE, eval = run, engine.opts = "-l"}
-conda activate pyscenic
-
-pyscenic grn \
-  -o output/pyscenic/grn.csv \
-  --seed 0110110110 \
-  --num_workers 4 \
-  output/pyscenic/normcounts.csv \
-  resources/pyscenic/mm_mgi_tfs.txt
-  
-conda deactivate
-```
-
-Check if pyscenic ctx output file is already present:
-
-```{r cache = FALSE}
-if (file.exists("output/pyscenic/ctx.csv")) {
-  run <- FALSE
-} else {
-  run <- TRUE
-}
-```
-
-Find enriched motifs for a gene signature:
-
-```{bash cache = FALSE, eval = run, engine.opts = "-l"}
-conda activate pyscenic
-
-pyscenic ctx \
-  -o output/pyscenic/ctx.csv \
-  --annotations_fname resources/pyscenic/motifs-v9-nr.mgi-m0.001-o0.0.tbl \
-  --num_workers 4 \
-  --expression_mtx_fname output/pyscenic/normcounts.csv \ 
-  output/pyscenic/grn.csv \
-  resources/pyscenic/mm10__refseq-r80__500bp_up_and_100bp_down_tss.mc9nr.feather
-  
-conda deactivate
-```
-
-Check if pyscenic aucell output file is already present:
-
-```{r cache = FALSE}
-if (file.exists("output/pyscenic/aucell.csv")) {
-  run <- FALSE
-} else {
-  run <- TRUE
-}
-```
-
-Quantify activity of gene signatures across single cells:
-
-```{bash cache = FALSE, eval = run, engine.opts = "-l"}
-conda activate pyscenic
-
-pyscenic aucell \
-  -o output/pyscenic/aucell.csv \
-  --num_workers 4 \
-  --seed 0010011000 \
-  output/pyscenic/normcounts.csv \
-  output/pyscenic/ctx.csv
-
-conda deactivate
-```
-
-## Results
-
-Read and order activity matrix:
+Rename experiment cells:
 
 ```{r}
-auc <- read.csv("output/pyscenic/aucell.csv", row.names = "Regulon", stringsAsFactors = FALSE)
+colnames(auc) <- colnames(sce)
+```
 
+Order activity matrix by cluster:
+
+```{r}
 auc <- auc[, order(sce$cluster)]
-
-auc <- as.matrix(auc)
 ```
 
 Create heatmap colour palette:
 
 ```{r}
-cluster.palette <- c(
-  "1" = "#4E79A7",
-  "2" = "#F28E2B",
-  "3" = "#E15759"
-)
+phenotype.palette <- c("HET" = "#BAB0AC", "HOM" = "#E15759")
+
+cluster.palette <- iwanthue(n = nlevels(sce$cluster))
+
+cluster.palette <- setNames(cluster.palette, levels(sce$cluster))
+
+celltype.palette <- MouseGastrulationData::EmbryoCelltypeColours
+
+celltype.palette <- subset(celltype.palette, names(celltype.palette) %in% sce$celltype)
 ```
 
 Create heatmap annotation:
 
 ```{r}
 ann <- list(
-  annotation_col = data.frame(Cluster = sce$cluster, row.names = colnames(sce)),
-  annotation_colors = list(Cluster = cluster.palette)
+  annotation_col = data.frame(
+    Cluster = sce$cluster, 
+    Celltype = sce$celltype, 
+    Phenotype = sce$phenotype, 
+    row.names = colnames(sce)
+  ),
+  annotation_colors = list(
+    Cluster = cluster.palette, 
+    Celltype = celltype.palette, 
+    Phenotype = phenotype.palette
+  )
 )
 ```
 
@@ -190,17 +138,17 @@ pheatmap(
 )
 ```
 
-Identify outlier or potentially "interesting" regulons:
+Identify most variable regulons:
 
 ```{r}
-out <- isOutlier(rowVars(auc), nmads = 1, type = "higher", log = TRUE)
+idx <- order(rowVars(auc), decreasing = TRUE)[1:30]
 ```
 
 Plot matrix of AUC values for outlier regulons:
 
 ```{r fig.width = 8, fig.height = 6}
 pheatmap(
-  mat = auc[out, ],
+  mat = auc[idx, ],
   color = viridis(100),
   cluster_cols = FALSE,
   annotation_col = ann$annotation_col,
